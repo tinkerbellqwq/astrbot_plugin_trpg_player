@@ -355,9 +355,9 @@ class TRPGPlayerPlugin(Star):
 
     @filter.command("帮助")
     async def trpg_help(self, event: AstrMessageEvent):
-        '''查看跑团插件帮助说明: /帮助'''
+        '''查看帮助说明: /帮助'''
         help_text = (
-            "【跑团插件帮助】\n"
+            "【帮助】\n"
             "--- 基础指令 ---\n"
             "1. /登记 [角色名]：创建角色卡（初始六围10，积分1000）\n"
             "2. /面板：查看你的个人面板\n"
