@@ -1,7 +1,6 @@
 import json
 import sqlite3
 from pathlib import Path
-from datetime import datetime
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -10,8 +9,10 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 @register("astrbot_plugin_trpg_player", "tinker", "跑团玩家角色卡插件", "1.0.0", "https://github.com/AstrBotDevs/astrbot_plugin_trpg_player")
 class TRPGPlayerPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict):
         super().__init__(context)
+        self.config = config
+        self.super_admins = self.config.get("super_admins", [])
         self.plugin_data_path = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_trpg_player"
         self.plugin_data_path.mkdir(parents=True, exist_ok=True)
         self.db_path = self.plugin_data_path / "trpg_player.db"
@@ -42,6 +43,16 @@ class TRPGPlayerPlugin(Star):
             ''')
             conn.commit()
 
+    def _is_super_admin(self, qq_user_id: str) -> bool:
+        return qq_user_id in self.super_admins
+
+    def _get_target_qq(self, event: AstrMessageEvent, text_fallback: str) -> str:
+        """从消息中提取目标QQ，优先提取At组件，其次使用文本兜底"""
+        for comp in event.get_messages():
+            if isinstance(comp, At):
+                return str(comp.qq)
+        return text_fallback.strip()
+
     @filter.command("登记")
     async def register_player(self, event: AstrMessageEvent, character_name: str = ""):
         '''登记一个新的角色卡: /登记 [角色名]'''
@@ -70,15 +81,20 @@ class TRPGPlayerPlugin(Star):
     async def view_profile(self, event: AstrMessageEvent):
         '''查看当前角色的信息面板: /面板'''
         qq_user_id = str(event.get_sender_id())
+        await self._send_profile_panel(event, qq_user_id)
 
+    async def _send_profile_panel(self, event: AstrMessageEvent, target_qq: str):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            cursor.execute("SELECT * FROM players WHERE qq_user_id = ?", (target_qq,))
             row = cursor.fetchone()
 
             if not row:
-                yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
+                if str(event.get_sender_id()) == target_qq:
+                    yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
+                else:
+                    yield event.plain_result(f"用户 {target_qq} 还没有登记角色。")
                 return
 
             items = json.loads(row['items'])
@@ -91,6 +107,7 @@ class TRPGPlayerPlugin(Star):
 
             panel = (
                 f"——个人信息——\n"
+                f"QQ：{row['qq_user_id']}\n"
                 f"姓名：{row['character_name']}\n"
                 f"性别：{gender_str}\n"
                 f"力量：{row['strength']}\n"
@@ -171,3 +188,168 @@ class TRPGPlayerPlugin(Star):
 
         action = "增加" if delta > 0 else "减少"
         yield event.plain_result(f"{stat_name}已{action} {abs(delta)} 点，当前{stat_name}：{new_val}")
+
+    # ================= 超级管理员特权指令 =================
+
+    @filter.command("查看面板")
+    async def admin_view_profile(self, event: AstrMessageEvent, target: str = ""):
+        '''[超管] 查看他人面板: /查看面板 @某人 或 /查看面板 [QQ号]'''
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
+            return
+
+        target_qq = self._get_target_qq(event, target)
+        if not target_qq:
+            yield event.plain_result("请指定目标，例如：/查看面板 @某人")
+            return
+
+        async for res in self._send_profile_panel(event, target_qq):
+            yield res
+
+    @filter.command("删除角色")
+    async def admin_delete_player(self, event: AstrMessageEvent, target: str = ""):
+        '''[超管] 删除某个用户的角色卡: /删除角色 @某人 或 /删除角色 [QQ号]'''
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
+            return
+
+        target_qq = self._get_target_qq(event, target)
+        if not target_qq:
+            yield event.plain_result("请指定目标，例如：/删除角色 @某人")
+            return
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (target_qq,))
+            row = cursor.fetchone()
+            if not row:
+                yield event.plain_result(f"未找到目标用户 {target_qq} 的角色卡。")
+                return
+
+            char_name = row[0]
+            cursor.execute("DELETE FROM players WHERE qq_user_id = ?", (target_qq,))
+            conn.commit()
+
+        yield event.plain_result(f"已成功删除用户 {target_qq} 的角色「{char_name}」。")
+
+    @filter.command("强制修改")
+    async def admin_force_modify(self, event: AstrMessageEvent, target: str = "", stat_name: str = "", op_val: str = ""):
+        '''[超管] 强制修改某个用户的六围属性、积分: /强制修改 @某人 [属性] [+/-数值]'''
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
+            return
+
+        target_qq = self._get_target_qq(event, target)
+        if not target_qq or not stat_name or not op_val:
+            yield event.plain_result("指令格式错误，正确格式：/强制修改 @某人 [属性] [+/-数值]\n例如：/强制修改 @张三 力量 +10")
+            return
+
+        stat_map = {
+            "力量": "strength", "速度": "speed", "智力": "intelligence",
+            "体力": "stamina", "精神力": "spirit", "免疫力": "immunity", "积分": "score"
+        }
+
+        if stat_name not in stat_map:
+            yield event.plain_result(f"未知属性「{stat_name}」。可选属性：{', '.join(stat_map.keys())}")
+            return
+
+        try:
+            if op_val.startswith('+'):
+                delta = int(op_val[1:])
+            elif op_val.startswith('-'):
+                delta = int(op_val)
+            else:
+                yield event.plain_result("数值必须以 + 或 - 开头，例如：+10")
+                return
+        except ValueError:
+            yield event.plain_result("无效的数值格式。")
+            return
+
+        db_field = stat_map[stat_name]
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (target_qq,))
+            if not cursor.fetchone():
+                yield event.plain_result(f"未找到目标用户 {target_qq} 的角色卡。")
+                return
+
+            cursor.execute(f'''
+                UPDATE players
+                SET {db_field} = {db_field} + ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (delta, target_qq))
+            conn.commit()
+
+            cursor.execute(f"SELECT {db_field} FROM players WHERE qq_user_id = ?", (target_qq,))
+            new_val = cursor.fetchone()[0]
+
+        action = "增加" if delta > 0 else "减少"
+        yield event.plain_result(f"已强制修改用户 {target_qq} 的 {stat_name}：{action} {abs(delta)} 点，当前{stat_name}为：{new_val}")
+
+    @filter.command("增加物品")
+    async def admin_add_item(self, event: AstrMessageEvent, target: str = "", item_name: str = ""):
+        '''[超管] 给某人增加物品: /增加物品 @某人 [物品名]'''
+        await self._modify_list_field(event, target, item_name, "items", "增加物品")
+
+    @filter.command("删除物品")
+    async def admin_remove_item(self, event: AstrMessageEvent, target: str = "", item_name: str = ""):
+        '''[超管] 给某人删除物品: /删除物品 @某人 [物品名]'''
+        await self._modify_list_field(event, target, item_name, "items", "删除物品")
+
+    @filter.command("增加技能")
+    async def admin_add_skill(self, event: AstrMessageEvent, target: str = "", skill_name: str = ""):
+        '''[超管] 给某人增加技能: /增加技能 @某人 [技能名]'''
+        await self._modify_list_field(event, target, skill_name, "skills", "增加技能")
+
+    @filter.command("删除技能")
+    async def admin_remove_skill(self, event: AstrMessageEvent, target: str = "", skill_name: str = ""):
+        '''[超管] 给某人删除技能: /删除技能 @某人 [技能名]'''
+        await self._modify_list_field(event, target, skill_name, "skills", "删除技能")
+
+    async def _modify_list_field(self, event: AstrMessageEvent, target: str, element_name: str, db_field: str, action: str):
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
+            return
+
+        target_qq = self._get_target_qq(event, target)
+        if not target_qq or not element_name:
+            yield event.plain_result(f"指令格式错误，正确格式：/{action} @某人 [{action[-2:]}名]")
+            return
+
+        is_add = "增加" in action
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT character_name, {db_field} FROM players WHERE qq_user_id = ?", (target_qq,))
+            row = cursor.fetchone()
+            if not row:
+                yield event.plain_result(f"未找到目标用户 {target_qq} 的角色卡。")
+                return
+
+            char_name = row[0]
+            elements = json.loads(row[1])
+
+            if is_add:
+                elements.append(element_name)
+                msg = f"成功向用户 {target_qq}（{char_name}）的{action[-2:]}列表中添加：「{element_name}」"
+            else:
+                if element_name in elements:
+                    elements.remove(element_name)
+                    msg = f"成功从用户 {target_qq}（{char_name}）的{action[-2:]}列表中移除：「{element_name}」"
+                else:
+                    msg = f"用户 {target_qq} 的{action[-2:]}列表中没有找到：「{element_name}」"
+
+            elements_str = json.dumps(elements, ensure_ascii=False)
+            cursor.execute(f'''
+                UPDATE players
+                SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (elements_str, target_qq))
+            conn.commit()
+
+        yield event.plain_result(msg)
