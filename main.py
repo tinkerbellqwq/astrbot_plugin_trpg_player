@@ -5,6 +5,7 @@ from pathlib import Path
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.all import *
+from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 @register("astrbot_plugin_trpg_player", "tinker", "跑团玩家角色卡插件", "1.0.0", "https://github.com/AstrBotDevs/astrbot_plugin_trpg_player")
@@ -195,14 +196,15 @@ class TRPGPlayerPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def handle_stat_modification(self, event: AstrMessageEvent):
-        '''处理属性修改，如 /力量 +1'''
+        '''处理属性修改，如 力量 +1'''
         message = event.message_str.strip()
+        logger.info(f"Received message for stat modification: {message}")
 
-        # 匹配格式: /属性名 +数值 或 /属性名 -数值
-        if not message.startswith("/"):
-            return
+        # 匹配格式: 属性名 +数值 或 属性名 -数值 (如果用户输入了 /，则去掉)
+        if message.startswith("/"):
+            message = message[1:].strip()
 
-        parts = message[1:].split()
+        parts = message.split()
         if len(parts) != 2:
             return
 
