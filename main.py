@@ -353,6 +353,29 @@ class TRPGPlayerPlugin(Star):
 
         yield event.plain_result(f"成功下架商品：「{item_name}」。")
 
+    @filter.command("帮助")
+    async def trpg_help(self, event: AstrMessageEvent):
+        '''查看跑团插件帮助说明: /帮助'''
+        help_text = (
+            "【跑团插件帮助】\n"
+            "--- 基础指令 ---\n"
+            "1. /登记 [角色名]：创建角色卡（初始六围10，积分1000）\n"
+            "2. /面板：查看你的个人面板\n"
+            "3. /修改姓名 [新姓名]：修改自己的角色名\n"
+            "4. /修改性别 [新性别]：修改自己的性别\n"
+            "5. [属性名] [+/-数值]：买卖属性（如: 力量 +1，每1点消耗100积分）\n\n"
+            "--- 商店指令 ---\n"
+            "6. /商店 列表：查看在售物品/技能\n"
+            "7. /商店 购买 [名称]：花费积分购买\n\n"
+            "--- 管理员指令 ---\n"
+            "8. /查看面板 @某人\n"
+            "9. /强制修改 @某人 [属性] [+/-数值]\n"
+            "10. /增加物品(删除物品) @某人 [名称]\n"
+            "11. /商店 上架 [名称] [价格] [物品/技能]\n"
+            "（更多管理指令详见插件说明）"
+        )
+        yield event.plain_result(help_text)
+
     @shop.command("列表")
     async def shop_list(self, event: AstrMessageEvent):
         '''查看商店在售商品: /商店 列表'''
