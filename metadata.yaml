@@ -1,0 +1,17 @@
+name: astrbot_plugin_trpg_player
+desc: TRPG跑团玩家角色卡插件，支持注册个人信息、记录数值、积分和物品。
+help: |-
+  指令列表：
+  /登记 [角色名] - 登记一个新的角色卡
+  /面板 - 查看当前角色的信息面板
+  /[属性] [+/-][数值] - 修改属性数值，例如：/力量 +1
+version: 1.0.0
+author: claude
+repo: https://github.com/AstrBotDevs/astrbot_plugin_trpg_player
+astrbot_version: ">=4.9.2"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - satori
+  - kook
+  - discord
