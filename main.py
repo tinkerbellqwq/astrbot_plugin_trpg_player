@@ -64,19 +64,41 @@ class TRPGPlayerPlugin(Star):
         return text_fallback.strip()
 
     @filter.command("登记")
-    async def register_player(self, event: AstrMessageEvent, character_name: str = ""):
-        '''登记一个新的角色卡: /登记 [角色名]'''
-        if not character_name:
-            yield event.plain_result("请提供角色名，格式：/登记 [角色名]")
-            return
-
+    async def register_player(self, event: AstrMessageEvent, target_or_name: str = "", character_name: str = ""):
+        '''登记一个新的角色卡: /登记 [角色名] 或 /登记 @某人 [角色名] (仅超管)'''
         qq_user_id = str(event.get_sender_id())
+        target_qq = qq_user_id
+        final_character_name = target_or_name
+
+        # 检查是否有 At 消息
+        at_qq = None
+        for comp in event.get_messages():
+            if isinstance(comp, At):
+                at_qq = str(comp.qq)
+                break
+
+        if at_qq:
+            if not self._is_super_admin(qq_user_id):
+                yield event.plain_result("权限不足，仅超级管理员可以为其他用户登记角色。")
+                return
+            target_qq = at_qq
+            final_character_name = character_name
+        elif target_or_name and character_name:
+             # 如果用户没艾特，却传了两个参数，假设可能输错了，取第一个当名字
+             final_character_name = target_or_name
+
+        if not final_character_name:
+            yield event.plain_result("请提供角色名，格式：/登记 [角色名] 或 /登记 @某人 [角色名]")
+            return
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (target_qq,))
             if cursor.fetchone():
-                yield event.plain_result("您已经登记过角色了，目前每位用户仅支持一张角色卡。")
+                if target_qq == qq_user_id:
+                    yield event.plain_result("您已经登记过角色了，目前每位用户仅支持一张角色卡。")
+                else:
+                    yield event.plain_result(f"用户 {target_qq} 已经登记过角色了。")
                 return
 
             gender = "未知"
@@ -89,7 +111,7 @@ class TRPGPlayerPlugin(Star):
                         bot = event.bot
 
                     if bot and hasattr(bot, "call_action"):
-                        user_info = await bot.call_action("get_stranger_info", user_id=int(qq_user_id), no_cache=False)
+                        user_info = await bot.call_action("get_stranger_info", user_id=int(target_qq), no_cache=False)
                         if user_info and "sex" in user_info:
                             sex_map = {"male": "男", "female": "女", "unknown": "未知"}
                             gender = sex_map.get(user_info["sex"], "未知")
@@ -100,10 +122,13 @@ class TRPGPlayerPlugin(Star):
             cursor.execute('''
                 INSERT INTO players (qq_user_id, character_name, gender)
                 VALUES (?, ?, ?)
-            ''', (qq_user_id, character_name, gender))
+            ''', (target_qq, final_character_name, gender))
             conn.commit()
 
-        yield event.plain_result(f"角色「{character_name}」登记成功！初始属性已设置为10，积分1000点。使用 /面板 查看详细信息。")
+        if target_qq == qq_user_id:
+            yield event.plain_result(f"角色「{final_character_name}」登记成功！初始属性已设置为10，积分1000点。使用 /面板 查看详细信息。")
+        else:
+            yield event.plain_result(f"成功为用户 {target_qq} 登记角色「{final_character_name}」！初始属性已设置为10，积分1000点。")
 
     @filter.command("修改姓名")
     async def change_character_name(self, event: AstrMessageEvent, new_name: str = ""):
@@ -368,10 +393,11 @@ class TRPGPlayerPlugin(Star):
             "6. /商店 列表：查看在售物品/技能\n"
             "7. /商店 购买 [名称]：花费积分购买\n\n"
             "--- 管理员指令 ---\n"
-            "8. /查看面板 @某人\n"
-            "9. /强制修改 @某人 [属性] [+/-数值]\n"
-            "10. /增加物品(删除物品) @某人 [名称]\n"
-            "11. /商店 上架 [名称] [价格] [物品/技能]\n"
+            "8. /登记 @某人 [角色名]：为指定用户创建角色卡\n"
+            "9. /查看面板 @某人\n"
+            "10. /强制修改 @某人 [属性] [+/-数值]\n"
+            "11. /增加物品(删除物品) @某人 [名称]\n"
+            "12. /商店 上架 [名称] [价格] [物品/技能]\n"
             "（更多管理指令详见插件说明）"
         )
         yield event.plain_result(help_text)
