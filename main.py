@@ -42,6 +42,15 @@ class TRPGPlayerPlugin(Star):
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # 商店物品表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS shop_items (
+                    item_name TEXT PRIMARY KEY,
+                    price INTEGER NOT NULL,
+                    item_type TEXT DEFAULT '物品',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             conn.commit()
 
     def _is_super_admin(self, qq_user_id: str) -> bool:
@@ -281,7 +290,146 @@ class TRPGPlayerPlugin(Star):
         # 成功处理指令后，拦截事件，防止继续传给大模型
         event.stop_event()
 
-    # ================= 超级管理员特权指令 =================
+    # ================= 商店功能 =================
+
+    @filter.command_group("商店")
+    def shop(self):
+        '''交易商城相关指令: /商店 列表 | 购买 | 上架 | 下架'''
+        pass
+
+    @shop.command("上架")
+    async def shop_add(self, event: AstrMessageEvent, item_name: str = "", price: str = "", item_type: str = "物品"):
+        '''[超管] 上架商品: /商店 上架 [物品/技能名称] [价格] [类型(物品/技能，默认为物品)]'''
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可上架商品。")
+            return
+
+        if not item_name or not price:
+            yield event.plain_result("指令格式错误，正确格式：/商店 上架 [名称] [价格] [可选:物品/技能]")
+            return
+
+        if item_type not in ["物品", "技能"]:
+            yield event.plain_result("类型只能是“物品”或“技能”。")
+            return
+
+        try:
+            price_val = int(price)
+            if price_val < 0:
+                raise ValueError
+        except ValueError:
+            yield event.plain_result("价格必须是非负整数。")
+            return
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("REPLACE INTO shop_items (item_name, price, item_type) VALUES (?, ?, ?)",
+                           (item_name, price_val, item_type))
+            conn.commit()
+
+        yield event.plain_result(f"成功上架【{item_type}】：「{item_name}」，售价：{price_val} 积分。")
+
+    @shop.command("下架")
+    async def shop_remove(self, event: AstrMessageEvent, item_name: str = ""):
+        '''[超管] 下架商品: /商店 下架 [物品/技能名称]'''
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可下架商品。")
+            return
+
+        if not item_name:
+            yield event.plain_result("指令格式错误，正确格式：/商店 下架 [名称]")
+            return
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM shop_items WHERE item_name = ?", (item_name,))
+            if not cursor.fetchone():
+                yield event.plain_result(f"商店中不存在商品：「{item_name}」。")
+                return
+
+            cursor.execute("DELETE FROM shop_items WHERE item_name = ?", (item_name,))
+            conn.commit()
+
+        yield event.plain_result(f"成功下架商品：「{item_name}」。")
+
+    @shop.command("列表")
+    async def shop_list(self, event: AstrMessageEvent):
+        '''查看商店在售商品: /商店 列表'''
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_name, price, item_type FROM shop_items ORDER BY item_type, price ASC")
+            rows = cursor.fetchall()
+
+            if not rows:
+                yield event.plain_result("当前商店空空如也，没有任何商品在售。")
+                return
+
+            msg_lines = ["—— 商店在售商品 ——"]
+            for row in rows:
+                msg_lines.append(f"[{row[2]}] {row[0]} - {row[1]} 积分")
+
+            msg_lines.append("\n使用 /商店 购买 [名称] 进行购买。")
+
+        yield event.plain_result("\n".join(msg_lines))
+
+    @shop.command("购买")
+    async def shop_buy(self, event: AstrMessageEvent, item_name: str = ""):
+        '''购买商店商品: /商店 购买 [物品/技能名称]'''
+        if not item_name:
+            yield event.plain_result("请输入要购买的商品名称，例如：/商店 购买 屠龙宝刀")
+            return
+
+        qq_user_id = str(event.get_sender_id())
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # 检查玩家是否注册
+            cursor.execute("SELECT character_name, score, items, skills FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            player_row = cursor.fetchone()
+            if not player_row:
+                yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
+                return
+
+            # 检查商品是否存在
+            cursor.execute("SELECT price, item_type FROM shop_items WHERE item_name = ?", (item_name,))
+            shop_row = cursor.fetchone()
+            if not shop_row:
+                yield event.plain_result(f"商店中没有名为「{item_name}」的商品。")
+                return
+
+            price = shop_row['price']
+            item_type = shop_row['item_type']
+            current_score = player_row['score']
+            char_name = player_row['character_name']
+
+            # 检查玩家当前物品/技能列表，判断是否重复购买
+            db_field = "items" if item_type == "物品" else "skills"
+            elements = json.loads(player_row[db_field])
+
+            if item_name in elements:
+                yield event.plain_result(f"您（{char_name}）已经拥有【{item_type}】「{item_name}」，无法重复购买。")
+                return
+
+            # 检查余额
+            if current_score < price:
+                yield event.plain_result(f"积分不足！购买「{item_name}」需要 {price} 积分，您当前只有 {current_score} 积分。")
+                return
+
+            # 执行扣款和发货
+            elements.append(item_name)
+            elements_str = json.dumps(elements, ensure_ascii=False)
+
+            cursor.execute(f'''
+                UPDATE players
+                SET score = score - ?, {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (price, elements_str, qq_user_id))
+            conn.commit()
+
+        yield event.plain_result(f"购买成功！您花费了 {price} 积分购买了【{item_type}】「{item_name}」。当前剩余积分：{current_score - price}。")
 
     @filter.command("查看面板")
     async def admin_view_profile(self, event: AstrMessageEvent, target: str = ""):
