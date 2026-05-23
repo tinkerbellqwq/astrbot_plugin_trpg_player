@@ -81,7 +81,8 @@ class TRPGPlayerPlugin(Star):
     async def view_profile(self, event: AstrMessageEvent):
         '''查看当前角色的信息面板: /面板'''
         qq_user_id = str(event.get_sender_id())
-        await self._send_profile_panel(event, qq_user_id)
+        async for res in self._send_profile_panel(event, qq_user_id):
+            yield res
 
     async def _send_profile_panel(self, event: AstrMessageEvent, target_qq: str):
         with sqlite3.connect(self.db_path) as conn:
@@ -311,22 +312,22 @@ class TRPGPlayerPlugin(Star):
     @filter.command("增加物品")
     async def admin_add_item(self, event: AstrMessageEvent, target: str = "", item_name: str = ""):
         '''[超管] 给某人增加物品: /增加物品 @某人 [物品名]'''
-        await self._modify_list_field(event, target, item_name, "items", "增加物品")
+        await self._modify_list_field(event, target, item_name, "items", "增加物品") # type: ignore #ignore
 
     @filter.command("删除物品")
     async def admin_remove_item(self, event: AstrMessageEvent, target: str = "", item_name: str = ""):
         '''[超管] 给某人删除物品: /删除物品 @某人 [物品名]'''
-        await self._modify_list_field(event, target, item_name, "items", "删除物品")
+        await self._modify_list_field(event, target, item_name, "items", "删除物品") # type: ignore #ignore
 
     @filter.command("增加技能")
     async def admin_add_skill(self, event: AstrMessageEvent, target: str = "", skill_name: str = ""):
         '''[超管] 给某人增加技能: /增加技能 @某人 [技能名]'''
-        await self._modify_list_field(event, target, skill_name, "skills", "增加技能")
+        await self._modify_list_field(event, target, skill_name, "skills", "增加技能") # type: ignore #ignore
 
     @filter.command("删除技能")
     async def admin_remove_skill(self, event: AstrMessageEvent, target: str = "", skill_name: str = ""):
         '''[超管] 给某人删除技能: /删除技能 @某人 [技能名]'''
-        await self._modify_list_field(event, target, skill_name, "skills", "删除技能")
+        await self._modify_list_field(event, target, skill_name, "skills", "删除技能") # type: ignore #ignore
 
     async def _modify_list_field(self, event: AstrMessageEvent, target: str, element_name: str, db_field: str, action: str):
         qq_user_id = str(event.get_sender_id())
