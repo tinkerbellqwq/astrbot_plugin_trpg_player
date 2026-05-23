@@ -69,13 +69,81 @@ class TRPGPlayerPlugin(Star):
                 yield event.plain_result("您已经登记过角色了，目前每位用户仅支持一张角色卡。")
                 return
 
+            gender = "未知"
+            # 尝试从 aiocqhttp 适配器获取性别信息
+            if event.get_platform_name() == "aiocqhttp":
+                try:
+                    # event.message_obj 可能是 AstrBotMessage，里面带有 bot(即 CQHttp client) 和 raw_message
+                    bot = getattr(event.message_obj, "bot", None)
+                    if not bot and hasattr(event, "bot"):
+                        bot = event.bot
+
+                    if bot and hasattr(bot, "call_action"):
+                        user_info = await bot.call_action("get_stranger_info", user_id=int(qq_user_id), no_cache=False)
+                        if user_info and "sex" in user_info:
+                            sex_map = {"male": "男", "female": "女", "unknown": "未知"}
+                            gender = sex_map.get(user_info["sex"], "未知")
+                except Exception as e:
+                    # 获取失败或接口不支持时，保留默认的“未知”
+                    pass
+
             cursor.execute('''
-                INSERT INTO players (qq_user_id, character_name)
-                VALUES (?, ?)
-            ''', (qq_user_id, character_name))
+                INSERT INTO players (qq_user_id, character_name, gender)
+                VALUES (?, ?, ?)
+            ''', (qq_user_id, character_name, gender))
             conn.commit()
 
         yield event.plain_result(f"角色「{character_name}」登记成功！初始属性已设置为10，积分1000点。使用 /面板 查看详细信息。")
+
+    @filter.command("修改姓名")
+    async def change_character_name(self, event: AstrMessageEvent, new_name: str = ""):
+        '''修改自己的角色姓名: /修改姓名 [新姓名]'''
+        if not new_name:
+            yield event.plain_result("请提供新的角色名，格式：/修改姓名 [新姓名]")
+            return
+
+        qq_user_id = str(event.get_sender_id())
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            if not cursor.fetchone():
+                yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
+                return
+
+            cursor.execute('''
+                UPDATE players
+                SET character_name = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (new_name, qq_user_id))
+            conn.commit()
+
+        yield event.plain_result(f"角色姓名已成功修改为「{new_name}」。")
+
+    @filter.command("修改性别")
+    async def change_character_gender(self, event: AstrMessageEvent, new_gender: str = ""):
+        '''修改自己的角色性别: /修改性别 [新性别]'''
+        if not new_gender:
+            yield event.plain_result("请提供新的角色性别，格式：/修改性别 [新性别]")
+            return
+
+        qq_user_id = str(event.get_sender_id())
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            if not cursor.fetchone():
+                yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
+                return
+
+            cursor.execute('''
+                UPDATE players
+                SET gender = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (new_gender, qq_user_id))
+            conn.commit()
+
+        yield event.plain_result(f"角色性别已成功修改为「{new_gender}」。")
 
     @filter.command("面板")
     async def view_profile(self, event: AstrMessageEvent):
