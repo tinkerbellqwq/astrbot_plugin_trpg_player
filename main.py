@@ -276,6 +276,9 @@ class TRPGPlayerPlugin(Star):
         else:
             yield event.plain_result(f"退还了 {stat_name} {abs(delta)} 点，返还了 {abs(total_cost)} 积分。当前{stat_name}：{new_val}，剩余积分：{new_score}")
 
+        # 成功处理指令后，拦截事件，防止继续传给大模型
+        event.stop_event()
+
     # ================= 超级管理员特权指令 =================
 
     @filter.command("查看面板")
