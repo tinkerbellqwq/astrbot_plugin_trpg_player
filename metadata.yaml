@@ -6,12 +6,8 @@ help: |-
   /面板 - 查看当前角色的信息面板
   /[属性] [+/-][数值] - 修改属性数值，例如：/力量 +1
 version: 1.0.0
-author: claude
-repo: https://github.com/AstrBotDevs/astrbot_plugin_trpg_player
+author: tinker
+repo: https://github.com/tinkerbellqwq/astrbot_plugin_trpg_player
 astrbot_version: ">=4.9.2"
 support_platforms:
   - aiocqhttp
-  - qq_official
-  - satori
-  - kook
-  - discord
