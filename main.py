@@ -140,15 +140,14 @@ class TRPGPlayerPlugin(Star):
         stat_name = parts[0]
         op_val = parts[1]
 
-        # 允许修改的属性映射
+        # 允许修改的属性映射 (不含积分，积分不能直接买卖)
         stat_map = {
             "力量": "strength",
             "速度": "speed",
             "智力": "intelligence",
             "体力": "stamina",
             "精神力": "spirit",
-            "免疫力": "immunity",
-            "积分": "score"
+            "免疫力": "immunity"
         }
 
         if stat_name not in stat_map:
@@ -162,32 +161,51 @@ class TRPGPlayerPlugin(Star):
                 delta = int(op_val) # 包含负号
             else:
                 return # 格式不匹配
+
+            if delta == 0:
+                yield event.plain_result("修改数值不能为 0。")
+                return
         except ValueError:
             return
 
         db_field = stat_map[stat_name]
         qq_user_id = str(event.get_sender_id())
+        cost_per_point = 100
+        total_cost = delta * cost_per_point  # 正数表示扣除积分，负数(退还属性)表示增加积分
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT character_name FROM players WHERE qq_user_id = ?", (qq_user_id,))
-            if not cursor.fetchone():
+            cursor.execute("SELECT character_name, score FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            row = cursor.fetchone()
+            if not row:
                 yield event.plain_result("您还没有登记角色，无法修改属性。请先使用 /登记 [角色名] 进行登记。")
                 return
 
+            current_score = row[1]
+
+            # 检查积分是否足够 (购买属性时)
+            if delta > 0 and current_score < total_cost:
+                yield event.plain_result(f"积分不足！提升 {delta} 点{stat_name}需要 {total_cost} 积分，您当前只有 {current_score} 积分。")
+                return
+
+            # 更新属性和积分
             cursor.execute(f'''
                 UPDATE players
-                SET {db_field} = {db_field} + ?, updated_at = CURRENT_TIMESTAMP
+                SET {db_field} = {db_field} + ?, score = score - ?, updated_at = CURRENT_TIMESTAMP
                 WHERE qq_user_id = ?
-            ''', (delta, qq_user_id))
+            ''', (delta, total_cost, qq_user_id))
             conn.commit()
 
             # 获取更新后的值
-            cursor.execute(f"SELECT {db_field} FROM players WHERE qq_user_id = ?", (qq_user_id,))
-            new_val = cursor.fetchone()[0]
+            cursor.execute(f"SELECT {db_field}, score FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            updated_row = cursor.fetchone()
+            new_val = updated_row[0]
+            new_score = updated_row[1]
 
-        action = "增加" if delta > 0 else "减少"
-        yield event.plain_result(f"{stat_name}已{action} {abs(delta)} 点，当前{stat_name}：{new_val}")
+        if delta > 0:
+            yield event.plain_result(f"消耗了 {total_cost} 积分，{stat_name}提升了 {delta} 点。当前{stat_name}：{new_val}，剩余积分：{new_score}")
+        else:
+            yield event.plain_result(f"退还了 {stat_name} {abs(delta)} 点，返还了 {abs(total_cost)} 积分。当前{stat_name}：{new_val}，剩余积分：{new_score}")
 
     # ================= 超级管理员特权指令 =================
 
