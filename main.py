@@ -397,7 +397,8 @@ class TRPGPlayerPlugin(Star):
             "9. /查看面板 @某人\n"
             "10. /强制修改 @某人 [属性] [+/-数值]\n"
             "11. /增加物品(删除物品) @某人 [名称]\n"
-            "12. /商店 上架 [名称] [价格] [物品/技能/血统]\n"
+            "12. /增加血统(删除血统) @某人 [名称]\n"
+            "13. /商店 上架 [名称] [价格] [物品/技能/血统]\n"
             "（更多管理指令详见插件说明）"
         )
         yield event.plain_result(help_text)
@@ -615,6 +616,55 @@ class TRPGPlayerPlugin(Star):
         '''[超管] 给某人删除技能: /删除技能 @某人 [技能名]'''
         async for res in self._modify_list_field(event, target, skill_name, "skills", "删除技能"):
             yield res
+
+    @filter.command("增加血统")
+    async def admin_add_bloodline(self, event: AstrMessageEvent, target: str = "", bloodline_name: str = ""):
+        '''[超管] 给某人设置血统: /增加血统 @某人 [血统名]'''
+        async for res in self._modify_string_field(event, target, bloodline_name, "bloodline", "设置血统"):
+            yield res
+
+    @filter.command("删除血统")
+    async def admin_remove_bloodline(self, event: AstrMessageEvent, target: str = ""):
+        '''[超管] 给某人删除血统(恢复为"无"): /删除血统 @某人'''
+        async for res in self._modify_string_field(event, target, "无", "bloodline", "删除血统"):
+            yield res
+
+    async def _modify_string_field(self, event: AstrMessageEvent, target: str, value: str, db_field: str, action: str):
+        qq_user_id = str(event.get_sender_id())
+        if not self._is_super_admin(qq_user_id):
+            yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
+            return
+
+        target_qq = self._get_target_qq(event, target)
+        if not target_qq:
+            yield event.plain_result(f"指令格式错误，请指定目标：/{action} @某人")
+            return
+
+        if action == "设置血统" and not value:
+            yield event.plain_result("指令格式错误，正确格式：/增加血统 @某人 [血统名]")
+            return
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT character_name, {db_field} FROM players WHERE qq_user_id = ?", (target_qq,))
+            row = cursor.fetchone()
+            if not row:
+                yield event.plain_result(f"未找到目标用户 {target_qq} 的角色卡。")
+                return
+
+            char_name = row[0]
+
+            cursor.execute(f'''
+                UPDATE players
+                SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (value, target_qq))
+            conn.commit()
+
+        if action == "删除血统":
+            yield event.plain_result(f"成功将用户 {target_qq}（{char_name}）的血统重置为「无」。")
+        else:
+            yield event.plain_result(f"成功将用户 {target_qq}（{char_name}）的血统设置为：「{value}」。")
 
     async def _modify_list_field(self, event: AstrMessageEvent, target: str, element_name: str, db_field: str, action: str):
         qq_user_id = str(event.get_sender_id())
