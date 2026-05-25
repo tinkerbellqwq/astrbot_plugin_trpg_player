@@ -8,7 +8,7 @@ from astrbot.api.all import *
 from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-@register("astrbot_plugin_trpg_player", "tinker", "跑团玩家角色卡插件", "1.0.0", "https://github.com/AstrBotDevs/astrbot_plugin_trpg_player")
+@register("astrbot_plugin_trpg_player", "tinker", "跑团玩家角色卡插件", "1.1.0", "https://github.com/AstrBotDevs/astrbot_plugin_trpg_player")
 class TRPGPlayerPlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
