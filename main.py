@@ -22,9 +22,18 @@ class TRPGPlayerPlugin(Star):
     def init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # 玩家角色表 (全局)
+
+            # Check if inventory column exists to determine if we need to migrate
+            cursor.execute("PRAGMA table_info(players)")
+            columns = [info[1] for info in cursor.fetchall()]
+            needs_migration = False
+
+            if 'inventory' not in columns and 'character_name' in columns:
+                needs_migration = True
+
+            # 玩家角色表 (全局) - 新表结构
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS players (
+                CREATE TABLE IF NOT EXISTS players_new (
                     qq_user_id TEXT PRIMARY KEY,
                     character_name TEXT NOT NULL,
                     gender TEXT,
@@ -35,13 +44,90 @@ class TRPGPlayerPlugin(Star):
                     spirit INTEGER DEFAULT 10,
                     immunity INTEGER DEFAULT 10,
                     score INTEGER DEFAULT 1000,
-                    items TEXT DEFAULT '[]',
-                    skills TEXT DEFAULT '[]',
-                    bloodline TEXT DEFAULT '无',
+                    inventory TEXT DEFAULT '{}',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            if needs_migration:
+                # Migrate data from old table to new table
+                cursor.execute("SELECT * FROM players")
+                old_players = cursor.fetchall()
+
+                # We need column names to index correctly
+                cursor.execute("PRAGMA table_info(players)")
+                old_cols = [info[1] for info in cursor.fetchall()]
+
+                for player in old_players:
+                    p_dict = dict(zip(old_cols, player))
+
+                    inventory = {}
+
+                    # Migrate items
+                    if 'items' in p_dict and p_dict['items']:
+                        try:
+                            items = json.loads(p_dict['items'])
+                            if items:
+                                inventory['物品'] = items
+                        except:
+                            pass
+
+                    # Migrate skills
+                    if 'skills' in p_dict and p_dict['skills']:
+                        try:
+                            skills = json.loads(p_dict['skills'])
+                            if skills:
+                                inventory['技能'] = skills
+                        except:
+                            pass
+
+                    # Migrate bloodline
+                    if 'bloodline' in p_dict and p_dict['bloodline'] and p_dict['bloodline'] != '无':
+                        inventory['血统'] = [p_dict['bloodline']]
+
+                    inventory_str = json.dumps(inventory, ensure_ascii=False)
+
+                    cursor.execute('''
+                        INSERT INTO players_new (
+                            qq_user_id, character_name, gender,
+                            strength, speed, intelligence, stamina, spirit, immunity,
+                            score, inventory, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        p_dict['qq_user_id'], p_dict['character_name'], p_dict.get('gender', '未知'),
+                        p_dict.get('strength', 10), p_dict.get('speed', 10), p_dict.get('intelligence', 10),
+                        p_dict.get('stamina', 10), p_dict.get('spirit', 10), p_dict.get('immunity', 10),
+                        p_dict.get('score', 1000), inventory_str,
+                        p_dict.get('created_at'), p_dict.get('updated_at')
+                    ))
+
+                # Replace old table with new table
+                cursor.execute("DROP TABLE players")
+                cursor.execute("ALTER TABLE players_new RENAME TO players")
+                logger.info("TRPG Player Plugin: Successfully migrated to dynamic inventory schema.")
+            else:
+                # Normal startup for new installations
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS players (
+                        qq_user_id TEXT PRIMARY KEY,
+                        character_name TEXT NOT NULL,
+                        gender TEXT,
+                        strength INTEGER DEFAULT 10,
+                        speed INTEGER DEFAULT 10,
+                        intelligence INTEGER DEFAULT 10,
+                        stamina INTEGER DEFAULT 10,
+                        spirit INTEGER DEFAULT 10,
+                        immunity INTEGER DEFAULT 10,
+                        score INTEGER DEFAULT 1000,
+                        inventory TEXT DEFAULT '{}',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                # Cleanup the temp table if it was created but not used
+                cursor.execute("DROP TABLE IF EXISTS players_new")
+
             # 商店物品表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS shop_items (
@@ -201,13 +287,15 @@ class TRPGPlayerPlugin(Star):
                     yield event.plain_result(f"用户 {target_qq} 还没有登记角色。")
                 return
 
-            items = json.loads(row['items'])
-            items_str = ", ".join(items) if items else "无"
-
-            skills = json.loads(row['skills'])
-            skills_str = ", ".join(skills) if skills else "无"
-
             gender_str = row['gender'] if row['gender'] else "未知"
+
+            # Parse dynamic inventory
+            inventory = {}
+            if row['inventory']:
+                try:
+                    inventory = json.loads(row['inventory'])
+                except:
+                    pass
 
             panel = (
                 f"——个人信息——\n"
@@ -221,12 +309,16 @@ class TRPGPlayerPlugin(Star):
                 f"精神力：{row['spirit']}\n"
                 f"免疫力：{row['immunity']}\n"
                 f"所得积分：{row['score']}\n"
-                f"所得物品：{items_str}\n"
-                f"技能：{skills_str}\n"
-                f"血统：{row['bloodline']}"
             )
 
-            yield event.plain_result(panel)
+            # Append dynamic categories
+            if inventory:
+                for category, items_list in inventory.items():
+                    if items_list:
+                        items_str = ", ".join(items_list)
+                        panel += f"【{category}】：{items_str}\n"
+
+            yield event.plain_result(panel.strip())
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def handle_stat_modification(self, event: AstrMessageEvent):
@@ -324,18 +416,14 @@ class TRPGPlayerPlugin(Star):
 
     @shop.command("上架")
     async def shop_add(self, event: AstrMessageEvent, item_name: str = "", price: str = "", item_type: str = "物品"):
-        '''[超管] 上架商品: /商店 上架 [物品/技能/血统名称] [价格] [类型(物品/技能/血统，默认为物品)]'''
+        '''[超管] 上架商品: /商店 上架 [商品名称] [价格] [自定义类型(如:物品/技能/宠物/称号，默认为物品)]'''
         qq_user_id = str(event.get_sender_id())
         if not self._is_super_admin(qq_user_id):
             yield event.plain_result("权限不足，仅超级管理员可上架商品。")
             return
 
         if not item_name or not price:
-            yield event.plain_result("指令格式错误，正确格式：/商店 上架 [名称] [价格] [可选:物品/技能/血统]")
-            return
-
-        if item_type not in ["物品", "技能", "血统"]:
-            yield event.plain_result("类型只能是“物品”、“技能”或“血统”。")
+            yield event.plain_result("指令格式错误，正确格式：/商店 上架 [名称] [价格] [可选:自定义类型]")
             return
 
         try:
@@ -390,15 +478,14 @@ class TRPGPlayerPlugin(Star):
             "4. /修改性别 [新性别]：修改自己的性别\n"
             "5. [属性名] [+/-数值]：买卖属性（如: 力量 +1，每1点消耗100积分）\n\n"
             "--- 商店指令 ---\n"
-            "6. /商店 列表：查看在售物品/技能/血统\n"
+            "6. /商店 列表：查看在售的各类商品\n"
             "7. /商店 购买 [名称]：花费积分购买\n\n"
             "--- 管理员指令 ---\n"
             "8. /登记 @某人 [角色名]：为指定用户创建角色卡\n"
             "9. /查看面板 @某人\n"
             "10. /强制修改 @某人 [属性] [+/-数值]\n"
-            "11. /增加物品(删除物品) @某人 [名称]\n"
-            "12. /增加血统(删除血统) @某人 [名称]\n"
-            "13. /商店 上架 [名称] [价格] [物品/技能/血统]\n"
+            "11. /增加(或 /删除) [类目] @某人 [名称]\n"
+            "12. /商店 上架 [名称] [价格] [自定义类目]\n"
             "（更多管理指令详见插件说明）"
         )
         yield event.plain_result(help_text)
@@ -425,7 +512,7 @@ class TRPGPlayerPlugin(Star):
 
     @shop.command("购买")
     async def shop_buy(self, event: AstrMessageEvent, item_name: str = ""):
-        '''购买商店商品: /商店 购买 [物品/技能/血统名称]'''
+        '''购买商店商品: /商店 购买 [物品/技能/自定义类目名称]'''
         if not item_name:
             yield event.plain_result("请输入要购买的商品名称，例如：/商店 购买 屠龙宝刀")
             return
@@ -437,7 +524,7 @@ class TRPGPlayerPlugin(Star):
             cursor = conn.cursor()
 
             # 检查玩家是否注册
-            cursor.execute("SELECT character_name, score, items, skills, bloodline FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            cursor.execute("SELECT character_name, score, inventory FROM players WHERE qq_user_id = ?", (qq_user_id,))
             player_row = cursor.fetchone()
             if not player_row:
                 yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
@@ -460,37 +547,30 @@ class TRPGPlayerPlugin(Star):
                 yield event.plain_result(f"积分不足！购买「{item_name}」需要 {price} 积分，您当前只有 {current_score} 积分。")
                 return
 
-            if item_type == "血统":
-                current_bloodline = player_row['bloodline']
-                if current_bloodline == item_name:
-                    yield event.plain_result(f"您（{char_name}）当前的血统已经是「{item_name}」，无法重复购买。")
-                    return
+            inventory = {}
+            if player_row['inventory']:
+                try:
+                    inventory = json.loads(player_row['inventory'])
+                except:
+                    pass
 
-                cursor.execute('''
-                    UPDATE players
-                    SET score = score - ?, bloodline = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE qq_user_id = ?
-                ''', (price, item_name, qq_user_id))
-                conn.commit()
-            else:
-                # 检查玩家当前物品/技能列表，判断是否重复购买
-                db_field = "items" if item_type == "物品" else "skills"
-                elements = json.loads(player_row[db_field])
+            if item_type not in inventory:
+                inventory[item_type] = []
 
-                if item_name in elements:
-                    yield event.plain_result(f"您（{char_name}）已经拥有【{item_type}】「{item_name}」，无法重复购买。")
-                    return
+            if item_name in inventory[item_type]:
+                yield event.plain_result(f"您（{char_name}）已经拥有【{item_type}】「{item_name}」，无法重复购买。")
+                return
 
-                # 执行扣款和发货
-                elements.append(item_name)
-                elements_str = json.dumps(elements, ensure_ascii=False)
+            # 执行扣款和发货
+            inventory[item_type].append(item_name)
+            inventory_str = json.dumps(inventory, ensure_ascii=False)
 
-                cursor.execute(f'''
-                    UPDATE players
-                    SET score = score - ?, {db_field} = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE qq_user_id = ?
-                ''', (price, elements_str, qq_user_id))
-                conn.commit()
+            cursor.execute('''
+                UPDATE players
+                SET score = score - ?, inventory = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE qq_user_id = ?
+            ''', (price, inventory_str, qq_user_id))
+            conn.commit()
 
         yield event.plain_result(f"购买成功！您花费了 {price} 积分购买了【{item_type}】「{item_name}」。当前剩余积分：{current_score - price}。")
 
@@ -593,119 +673,69 @@ class TRPGPlayerPlugin(Star):
         action = "增加" if delta > 0 else "减少"
         yield event.plain_result(f"已强制修改用户 {target_qq} 的 {stat_name}：{action} {abs(delta)} 点，当前{stat_name}为：{new_val}")
 
-    @filter.command("增加物品")
-    async def admin_add_item(self, event: AstrMessageEvent, target: str = "", item_name: str = ""):
-        '''[超管] 给某人增加物品: /增加物品 @某人 [物品名]'''
-        async for res in self._modify_list_field(event, target, item_name, "items", "增加物品"):
+    @filter.command("增加")
+    async def admin_add_category_item(self, event: AstrMessageEvent, category: str = "", target: str = "", item_name: str = ""):
+        '''[超管] 给某人增加某类目的物品: /增加 [类目] @某人 [名称]'''
+        async for res in self._modify_inventory_field(event, target, item_name, category, "增加"):
             yield res
 
-    @filter.command("删除物品")
-    async def admin_remove_item(self, event: AstrMessageEvent, target: str = "", item_name: str = ""):
-        '''[超管] 给某人删除物品: /删除物品 @某人 [物品名]'''
-        async for res in self._modify_list_field(event, target, item_name, "items", "删除物品"):
+    @filter.command("删除")
+    async def admin_remove_category_item(self, event: AstrMessageEvent, category: str = "", target: str = "", item_name: str = ""):
+        '''[超管] 给某人删除某类目的物品: /删除 [类目] @某人 [名称]'''
+        async for res in self._modify_inventory_field(event, target, item_name, category, "删除"):
             yield res
 
-    @filter.command("增加技能")
-    async def admin_add_skill(self, event: AstrMessageEvent, target: str = "", skill_name: str = ""):
-        '''[超管] 给某人增加技能: /增加技能 @某人 [技能名]'''
-        async for res in self._modify_list_field(event, target, skill_name, "skills", "增加技能"):
-            yield res
-
-    @filter.command("删除技能")
-    async def admin_remove_skill(self, event: AstrMessageEvent, target: str = "", skill_name: str = ""):
-        '''[超管] 给某人删除技能: /删除技能 @某人 [技能名]'''
-        async for res in self._modify_list_field(event, target, skill_name, "skills", "删除技能"):
-            yield res
-
-    @filter.command("增加血统")
-    async def admin_add_bloodline(self, event: AstrMessageEvent, target: str = "", bloodline_name: str = ""):
-        '''[超管] 给某人设置血统: /增加血统 @某人 [血统名]'''
-        async for res in self._modify_string_field(event, target, bloodline_name, "bloodline", "设置血统"):
-            yield res
-
-    @filter.command("删除血统")
-    async def admin_remove_bloodline(self, event: AstrMessageEvent, target: str = ""):
-        '''[超管] 给某人删除血统(恢复为"无"): /删除血统 @某人'''
-        async for res in self._modify_string_field(event, target, "无", "bloodline", "删除血统"):
-            yield res
-
-    async def _modify_string_field(self, event: AstrMessageEvent, target: str, value: str, db_field: str, action: str):
+    async def _modify_inventory_field(self, event: AstrMessageEvent, target: str, element_name: str, category: str, action: str):
         qq_user_id = str(event.get_sender_id())
         if not self._is_super_admin(qq_user_id):
             yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
             return
 
         target_qq = self._get_target_qq(event, target)
-        if not target_qq:
-            yield event.plain_result(f"指令格式错误，请指定目标：/{action} @某人")
+        if not target_qq or not element_name or not category:
+            yield event.plain_result(f"指令格式错误，正确格式：/{action} [类目] @某人 [名称]")
             return
 
-        if action == "设置血统" and not value:
-            yield event.plain_result("指令格式错误，正确格式：/增加血统 @某人 [血统名]")
-            return
+        is_add = action == "增加"
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute(f"SELECT character_name, {db_field} FROM players WHERE qq_user_id = ?", (target_qq,))
+            cursor.execute("SELECT character_name, inventory FROM players WHERE qq_user_id = ?", (target_qq,))
             row = cursor.fetchone()
             if not row:
                 yield event.plain_result(f"未找到目标用户 {target_qq} 的角色卡。")
                 return
 
             char_name = row[0]
+            inventory = {}
+            if row[1]:
+                try:
+                    inventory = json.loads(row[1])
+                except:
+                    pass
 
-            cursor.execute(f'''
-                UPDATE players
-                SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE qq_user_id = ?
-            ''', (value, target_qq))
-            conn.commit()
-
-        if action == "删除血统":
-            yield event.plain_result(f"成功将用户 {target_qq}（{char_name}）的血统重置为「无」。")
-        else:
-            yield event.plain_result(f"成功将用户 {target_qq}（{char_name}）的血统设置为：「{value}」。")
-
-    async def _modify_list_field(self, event: AstrMessageEvent, target: str, element_name: str, db_field: str, action: str):
-        qq_user_id = str(event.get_sender_id())
-        if not self._is_super_admin(qq_user_id):
-            yield event.plain_result("权限不足，仅超级管理员可使用该指令。")
-            return
-
-        target_qq = self._get_target_qq(event, target)
-        if not target_qq or not element_name:
-            yield event.plain_result(f"指令格式错误，正确格式：/{action} @某人 [{action[-2:]}名]")
-            return
-
-        is_add = "增加" in action
-
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"SELECT character_name, {db_field} FROM players WHERE qq_user_id = ?", (target_qq,))
-            row = cursor.fetchone()
-            if not row:
-                yield event.plain_result(f"未找到目标用户 {target_qq} 的角色卡。")
-                return
-
-            char_name = row[0]
-            elements = json.loads(row[1])
+            if category not in inventory:
+                inventory[category] = []
 
             if is_add:
-                elements.append(element_name)
-                msg = f"成功向用户 {target_qq}（{char_name}）的{action[-2:]}列表中添加：「{element_name}」"
-            else:
-                if element_name in elements:
-                    elements.remove(element_name)
-                    msg = f"成功从用户 {target_qq}（{char_name}）的{action[-2:]}列表中移除：「{element_name}」"
+                if element_name not in inventory[category]:
+                    inventory[category].append(element_name)
+                    msg = f"成功向用户 {target_qq}（{char_name}）的【{category}】中添加：「{element_name}」"
                 else:
-                    msg = f"用户 {target_qq} 的{action[-2:]}列表中没有找到：「{element_name}」"
+                    msg = f"用户 {target_qq}（{char_name}）已经拥有【{category}】：「{element_name}」"
+            else:
+                if element_name in inventory[category]:
+                    inventory[category].remove(element_name)
+                    msg = f"成功从用户 {target_qq}（{char_name}）的【{category}】中移除：「{element_name}」"
+                else:
+                    msg = f"用户 {target_qq} 的【{category}】中没有找到：「{element_name}」"
 
-            elements_str = json.dumps(elements, ensure_ascii=False)
-            cursor.execute(f'''
+            inventory_str = json.dumps(inventory, ensure_ascii=False)
+            cursor.execute('''
                 UPDATE players
-                SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                SET inventory = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE qq_user_id = ?
-            ''', (elements_str, target_qq))
+            ''', (inventory_str, target_qq))
             conn.commit()
 
         yield event.plain_result(msg)
