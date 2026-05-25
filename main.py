@@ -324,18 +324,18 @@ class TRPGPlayerPlugin(Star):
 
     @shop.command("上架")
     async def shop_add(self, event: AstrMessageEvent, item_name: str = "", price: str = "", item_type: str = "物品"):
-        '''[超管] 上架商品: /商店 上架 [物品/技能名称] [价格] [类型(物品/技能，默认为物品)]'''
+        '''[超管] 上架商品: /商店 上架 [物品/技能/血统名称] [价格] [类型(物品/技能/血统，默认为物品)]'''
         qq_user_id = str(event.get_sender_id())
         if not self._is_super_admin(qq_user_id):
             yield event.plain_result("权限不足，仅超级管理员可上架商品。")
             return
 
         if not item_name or not price:
-            yield event.plain_result("指令格式错误，正确格式：/商店 上架 [名称] [价格] [可选:物品/技能]")
+            yield event.plain_result("指令格式错误，正确格式：/商店 上架 [名称] [价格] [可选:物品/技能/血统]")
             return
 
-        if item_type not in ["物品", "技能"]:
-            yield event.plain_result("类型只能是“物品”或“技能”。")
+        if item_type not in ["物品", "技能", "血统"]:
+            yield event.plain_result("类型只能是“物品”、“技能”或“血统”。")
             return
 
         try:
@@ -390,14 +390,14 @@ class TRPGPlayerPlugin(Star):
             "4. /修改性别 [新性别]：修改自己的性别\n"
             "5. [属性名] [+/-数值]：买卖属性（如: 力量 +1，每1点消耗100积分）\n\n"
             "--- 商店指令 ---\n"
-            "6. /商店 列表：查看在售物品/技能\n"
+            "6. /商店 列表：查看在售物品/技能/血统\n"
             "7. /商店 购买 [名称]：花费积分购买\n\n"
             "--- 管理员指令 ---\n"
             "8. /登记 @某人 [角色名]：为指定用户创建角色卡\n"
             "9. /查看面板 @某人\n"
             "10. /强制修改 @某人 [属性] [+/-数值]\n"
             "11. /增加物品(删除物品) @某人 [名称]\n"
-            "12. /商店 上架 [名称] [价格] [物品/技能]\n"
+            "12. /商店 上架 [名称] [价格] [物品/技能/血统]\n"
             "（更多管理指令详见插件说明）"
         )
         yield event.plain_result(help_text)
@@ -424,7 +424,7 @@ class TRPGPlayerPlugin(Star):
 
     @shop.command("购买")
     async def shop_buy(self, event: AstrMessageEvent, item_name: str = ""):
-        '''购买商店商品: /商店 购买 [物品/技能名称]'''
+        '''购买商店商品: /商店 购买 [物品/技能/血统名称]'''
         if not item_name:
             yield event.plain_result("请输入要购买的商品名称，例如：/商店 购买 屠龙宝刀")
             return
@@ -436,7 +436,7 @@ class TRPGPlayerPlugin(Star):
             cursor = conn.cursor()
 
             # 检查玩家是否注册
-            cursor.execute("SELECT character_name, score, items, skills FROM players WHERE qq_user_id = ?", (qq_user_id,))
+            cursor.execute("SELECT character_name, score, items, skills, bloodline FROM players WHERE qq_user_id = ?", (qq_user_id,))
             player_row = cursor.fetchone()
             if not player_row:
                 yield event.plain_result("您还没有登记角色，请先使用 /登记 [角色名] 进行登记。")
@@ -454,29 +454,42 @@ class TRPGPlayerPlugin(Star):
             current_score = player_row['score']
             char_name = player_row['character_name']
 
-            # 检查玩家当前物品/技能列表，判断是否重复购买
-            db_field = "items" if item_type == "物品" else "skills"
-            elements = json.loads(player_row[db_field])
-
-            if item_name in elements:
-                yield event.plain_result(f"您（{char_name}）已经拥有【{item_type}】「{item_name}」，无法重复购买。")
-                return
-
             # 检查余额
             if current_score < price:
                 yield event.plain_result(f"积分不足！购买「{item_name}」需要 {price} 积分，您当前只有 {current_score} 积分。")
                 return
 
-            # 执行扣款和发货
-            elements.append(item_name)
-            elements_str = json.dumps(elements, ensure_ascii=False)
+            if item_type == "血统":
+                current_bloodline = player_row['bloodline']
+                if current_bloodline == item_name:
+                    yield event.plain_result(f"您（{char_name}）当前的血统已经是「{item_name}」，无法重复购买。")
+                    return
 
-            cursor.execute(f'''
-                UPDATE players
-                SET score = score - ?, {db_field} = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE qq_user_id = ?
-            ''', (price, elements_str, qq_user_id))
-            conn.commit()
+                cursor.execute('''
+                    UPDATE players
+                    SET score = score - ?, bloodline = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE qq_user_id = ?
+                ''', (price, item_name, qq_user_id))
+                conn.commit()
+            else:
+                # 检查玩家当前物品/技能列表，判断是否重复购买
+                db_field = "items" if item_type == "物品" else "skills"
+                elements = json.loads(player_row[db_field])
+
+                if item_name in elements:
+                    yield event.plain_result(f"您（{char_name}）已经拥有【{item_type}】「{item_name}」，无法重复购买。")
+                    return
+
+                # 执行扣款和发货
+                elements.append(item_name)
+                elements_str = json.dumps(elements, ensure_ascii=False)
+
+                cursor.execute(f'''
+                    UPDATE players
+                    SET score = score - ?, {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE qq_user_id = ?
+                ''', (price, elements_str, qq_user_id))
+                conn.commit()
 
         yield event.plain_result(f"购买成功！您花费了 {price} 积分购买了【{item_type}】「{item_name}」。当前剩余积分：{current_score - price}。")
 
